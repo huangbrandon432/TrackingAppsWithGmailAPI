@@ -1,6 +1,7 @@
 import pandas as pd
 
 import numpy as np
+import base64
 
 import os
 import pickle
@@ -10,7 +11,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 # for encoding/decoding messages in base64
 from base64 import urlsafe_b64decode, urlsafe_b64encode
-# for dealing with attachement MIME types
+# for dealing with attachment MIME types
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
@@ -49,8 +50,6 @@ def gmail_authenticate():
 service = gmail_authenticate()
 
 
-
-
 def search_messages(service, query):
     result = service.users().messages().list(userId='me',q=query).execute()
     messages = [ ]
@@ -64,18 +63,26 @@ def search_messages(service, query):
     return messages
 
 
+def get_body(mail):
+    try:
+        return base64.urlsafe_b64decode(mail["payload"]['parts'][0]['body']['data'].encode("ASCII")).decode("utf-8")
+    except:
+        return base64.urlsafe_b64decode(mail["payload"]['body']['data'].encode("ASCII")).decode("utf-8")
+
+
 
 def read_message(service, message_id):
 
     """
     This function takes Gmail API `service` and the given `message_id` and does the following:
         - Downloads the content of the email
-        - Appends email basic information (To, From, Subject & Date) to dictionary
+        - Adds email basic information (To, From, Subject & Date) and plain/text parts to dictionary
     """
 
     info = {}
 
     msg = service.users().messages().get(userId='me', id=message_id['id'], format='full').execute()
+    # parts can be the message body, or attachments
 
     info['snippet'] = msg['snippet']
     payload = msg['payload']
@@ -101,22 +108,28 @@ def read_message(service, message_id):
             if name.lower() == "date":
                 info['date'] = value
 
+    info['body'] = get_body(msg)
+
     return info
 
 
 #define subjects/words to remove/date
-subjects = ['application', 'applying', 'applied', 'resume']
+subjects = ['application', 'applying', 'applied', 'resume', 'position', 'Candidacy', 'Analyst']
+additional_subjects = ['']
 words_to_remove_in_search = ['']
+emails_to_remove_from_search = ['jobs-noreply@linkedin.com', 'jobalerts-noreply@linkedin.com', 'noreply@glassdoor.com']
 after_date = '2021/04/01'
 
 
 words_to_remove_in_search = ' '.join(['-'+i for i in words_to_remove_in_search])
+emails_to_remove_from_search = ' '.join(['-'+i for i in emails_to_remove_from_search])
 
 subjects = ' '.join('subject: '+i for i in subjects)
-subjects = "{" + subjects + "}"
+additional_subjects = ' '.join('subject: '+i for i in additional_subjects)
+all_subjects = "{" + subjects + " " + additional_subjects + "}"
 
 
-results = search_messages(service, f"after: {after_date} {subjects} in:inbox {words_to_remove_in_search}")
+results = search_messages(service, f"after: {after_date} {all_subjects} in:inbox {words_to_remove_in_search} from: {emails_to_remove_from_search}")
 
 msg_content = []
 
@@ -125,9 +138,48 @@ for msg in results:
 
 #organize in dataframe
 msg_content = pd.DataFrame(msg_content)
-msg_content = msg_content[['from', 'Subject', 'to', 'date', 'snippet']]
+msg_content = msg_content[['from', 'Subject', 'to', 'date', 'snippet', 'body']]
 
 
 
-print('# of job applications (using gmail):', len(msg_content))
-display(msg_content)
+application_did_not_move_forward_words = ['unfortunately', 'move forward with other candidates', 'highly competitive', 'regrettably', 'Regrettably', 'Unfortunately', 'not in the position to move forward',
+                                            'other candidates', 'more closely align', 'not the right fit', 'not to move forward']
+
+application_move_forward_words = ['set up', 'initial conversation', 'call', 'discussing the position', 'grab some time']
+
+did_not_move_forward_indexes = []
+
+move_forward_indexes = []
+
+for i in range(len(msg_content)):
+    email_body = msg_content.loc[i, 'body']
+    if any(x in email_body for x in application_did_not_move_forward_words):
+        did_not_move_forward_indexes.append(i)
+
+for i in range(len(msg_content)):
+    email_body = msg_content.loc[i, 'body']
+    if any(x in email_body for x in application_move_forward_words):
+        move_forward_indexes.append(i)
+
+
+
+
+did_not_move_forward = msg_content.iloc[did_not_move_forward_indexes].reset_index(drop=True)
+move_forward = msg_content.iloc[move_forward_indexes].reset_index(drop=True)
+applications = msg_content[~msg_content.index.isin(did_not_move_forward_indexes) & ~msg_content.index.isin(move_forward_indexes)].reset_index(drop=True)
+
+
+
+print('# of job applications (using gmail):', len(applications))
+display(applications)
+
+print()
+
+print("# didn't move forward:", len(did_not_move_forward))
+display(did_not_move_forward)
+
+
+print()
+
+print("# move forward:", len(move_forward))
+display(move_forward)
